@@ -8,6 +8,8 @@ import os
 import gc
 from ray.tune.search.optuna import OptunaSearch
 from ray.air import RunConfig
+# ### 추가: 자동 혼합 정밀도(AMP)를 위한 import ###
+from torch.cuda.amp import autocast, GradScaler
 
 from src.pid_training.pid_net import PIDNet
 from src.pid_training.plant import FirstOrderPlant
@@ -43,6 +45,10 @@ class PIDTrainable(Trainable):
         self.dt = torch.tensor(0.1, device=self.device)
         self.setpoint = torch.tensor(1.0, device=self.device)
 
+        # ### 추가: GradScaler 초기화 ###
+        # autocast에서 float16으로 계산 시 그래디언트가 너무 작아지는 현상(underflow)을 방지
+        self.scaler = GradScaler()
+
     def step(self):
         self.pid_net.train()
         
@@ -52,34 +58,42 @@ class PIDTrainable(Trainable):
         plant_outputs, flow_vectors_list = [], []
         current_value = self.plant.state.clone().to(self.device)
 
-        sim_steps = 50 # 메모리 사용량 감소
+        # ### 수정: 시뮬레이션 스텝 복원 ###
+        sim_steps = 200
         for _ in range(sim_steps):
-            control_input = self.pid_net(self.setpoint, current_value, self.dt.item())
-            current_value = self.plant.step(control_input.to('cpu'), self.dt.to('cpu')).to(self.device)
+            # ### autocast 컨텍스트 추가 ###
+            # 이 블록 내의 연산들은 A100에 최적화된 float16으로 자동 변환되어 실행됩니다.
+            with autocast():
+                control_input = self.pid_net(self.setpoint, current_value, self.dt.item())
+                current_value = self.plant.step(control_input.to('cpu'), self.dt.to('cpu')).to(self.device)
             
             plant_outputs.append(current_value)
             flow_vectors_list.append(control_input)
 
-        all_plant_outputs = torch.stack(plant_outputs)
-        all_setpoints = self.setpoint.expand_as(all_plant_outputs)
-        main_loss = self.criterion(all_plant_outputs, all_setpoints)
+        with autocast():
+            all_plant_outputs = torch.stack(plant_outputs)
+            all_setpoints = self.setpoint.expand_as(all_plant_outputs)
+            main_loss = self.criterion(all_plant_outputs, all_setpoints)
 
-        flow_vectors = torch.stack(flow_vectors_list)
-        ideal_control_value = self.setpoint.item() / self.plant.ku.item()
-        target_vectors = torch.full_like(flow_vectors, fill_value=ideal_control_value)
+            flow_vectors = torch.stack(flow_vectors_list)
+            ideal_control_value = self.setpoint.item() / self.plant.ku.item()
+            target_vectors = torch.full_like(flow_vectors, fill_value=ideal_control_value)
 
-        resonance_loss_val = self.geometric_loss_calculator.calculate_resonance_loss(
-            flow_vectors.unsqueeze(0),
-            target_vectors.unsqueeze(0)
-        )
-        
-        flow_divergence = calculate_flow_divergence(flow_vectors, target_vectors)
+            resonance_loss_val = self.geometric_loss_calculator.calculate_resonance_loss(
+                flow_vectors.unsqueeze(0),
+                target_vectors.unsqueeze(0)
+            )
+            
+            flow_divergence = calculate_flow_divergence(flow_vectors, target_vectors)
 
-        final_loss = main_loss + self.config["alpha"] * resonance_loss_val + self.config["beta"] * flow_divergence
+            final_loss = main_loss + self.config["alpha"] * resonance_loss_val + self.config["beta"] * flow_divergence
 
-        self.optimizer.zero_grad()
-        final_loss.backward()
-        self.optimizer.step()
+        self.optimizer.zero_grad(set_to_none=True) # set_to_none=True는 약간의 성능 향상
+
+        # ### 수정: scaler를 사용하여 역전파 및 스텝 실행 ###
+        self.scaler.scale(final_loss).backward()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
         
         return {
             "loss": final_loss.item(),
@@ -97,7 +111,7 @@ class PIDTrainable(Trainable):
         self.pid_net.load_state_dict(torch.load(checkpoint_path))
 
     def cleanup(self):
-        del self.pid_net, self.plant, self.optimizer, self.geometric_loss_calculator
+        del self.pid_net, self.plant, self.optimizer, self.geometric_loss_calculator, self.scaler
         gc.collect()
         if self.device == "cuda":
             torch.cuda.empty_cache()
@@ -124,15 +138,16 @@ def main():
         tune_config=tune.TuneConfig(
             search_alg=search_alg, 
             num_samples=20,
-            max_concurrent_trials=1 # 동시 실행 1개로 제한
+            # ### 수정: 동시 실행 Trial 수 상향 ###
+            max_concurrent_trials=4 
         ),
         run_config=RunConfig(
-            name="Geometric_PID_HPO",
+            name="Geometric_PID_HPO_A100",
             stop={"training_iteration": 10},
         ),
     )
     
-    print("Phase 2 HPO Started: Searching for optimal geometric parameters...")
+    print("Phase 2 HPO Started on A100: Searching for optimal geometric parameters with AMP...")
     results = tuner.fit()
     
     best_result = results.get_best_result("loss", "min")
