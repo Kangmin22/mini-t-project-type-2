@@ -11,19 +11,20 @@ from src.utils.loss import GeometricLoss
 
 def main():
     """
-    HPO로 찾은 최적의 하이퍼파라미터를 사용하여 최종 PIDNet 모델을 훈련하고 저장합니다.
+    HPO로 찾은 '역대 최상의' 하이퍼파라미터를 사용하여 최종 PIDNet 모델을 훈련하고 저장합니다.
     """
-    # --- 1. 설정: HPO에서 찾은 새로운 최적의 값으로 업데이트! ---
+    # --- 1. 설정: 우리가 찾은 역대 최상의 값으로 설정! ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
     BEST_HPARAMS = {
-        'lr': 0.02659908571456277, 
-        'alpha': 0.40007390809065563, 
-        'beta': 0.026438785848541202
+        'lr': 0.07973517675218665, 
+        'alpha': 0.3462792257398627, 
+        'beta': 0.08583256327599675
     }
     
-    print("Training final model with best hyperparameters:")
+    print("Training final model with the best hyperparameters ever found:")
+    print(f"Target Loss: -0.2196")
     print(json.dumps(BEST_HPARAMS, indent=2))
 
     pid_net = PIDNet().to(device)
@@ -37,9 +38,9 @@ def main():
     dt = torch.tensor(0.1, device=device)
     setpoint = torch.tensor(1.0, device=device)
 
+    # ... (이하 학습 루프 및 저장 코드는 동일) ...
     epoch_losses = []
 
-    # --- 2. 학습 루프 ---
     for epoch in tqdm(range(num_epochs), desc="Training Final Model"):
         plant.reset()
         pid_net.reset()
@@ -53,7 +54,6 @@ def main():
             plant_outputs.append(current_value)
             flow_vectors_list.append(control_input)
 
-        # --- 3. Loss 계산 및 역전파 ---
         all_plant_outputs = torch.stack(plant_outputs)
         all_setpoints = setpoint.expand_as(all_plant_outputs)
         main_loss = criterion(all_plant_outputs, all_setpoints)
@@ -75,12 +75,10 @@ def main():
     print("\n--- Final Model Training Finished ---")
     print(f"Final Loss: {epoch_losses[-1]:.4f}")
     
-    # --- 4. 최종 모델 저장 ---
     final_model_path = "final_pid_net.pth"
     torch.save(pid_net.state_dict(), final_model_path)
     print(f"Final model saved to '{final_model_path}'")
 
-    # --- 5. 결과 시각화 ---
     plt.figure(figsize=(10, 5))
     plt.plot(epoch_losses)
     plt.title("Final Model Training Loss Curve")
