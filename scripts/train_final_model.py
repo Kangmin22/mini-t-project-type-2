@@ -13,14 +13,14 @@ def main():
     """
     HPO로 찾은 최적의 하이퍼파라미터를 사용하여 최종 PIDNet 모델을 훈련하고 저장합니다.
     """
-    # --- 1. 설정: HPO에서 찾은 최적의 값으로 설정 ---
+    # --- 1. 설정: HPO에서 찾은 새로운 최적의 값으로 업데이트! ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
     BEST_HPARAMS = {
-        'lr': 0.09236381825024219,
-        'alpha': 0.12963639618431633,
-        'beta': 0.0008008980203053628
+        'lr': 0.07973517675218665, 
+        'alpha': 0.3462792257398627, 
+        'beta': 0.08583256327599675
     }
     
     print("Training final model with best hyperparameters:")
@@ -32,7 +32,6 @@ def main():
     geometric_loss_calculator = GeometricLoss(alpha=BEST_HPARAMS["alpha"], gamma=0.0).to(device)
     optimizer = optim.Adam(pid_net.parameters(), lr=BEST_HPARAMS["lr"])
 
-    # 최종 모델이므로 더 길게 학습
     num_epochs = 300
     sim_steps = 200
     dt = torch.tensor(0.1, device=device)
@@ -66,7 +65,8 @@ def main():
         resonance_loss_val = geometric_loss_calculator.calculate_resonance_loss(
             flow_vectors.unsqueeze(0), target_vectors.unsqueeze(0))
         
-        # beta는 HPO에서만 사용했으므로 여기서는 제외
+        # 최종 모델에서는 beta(경로 효율성)항도 최종 Loss에 반영해 줄 수 있습니다.
+        # 하지만 단순화를 위해 현재는 alpha만 사용합니다.
         final_loss = main_loss + BEST_HPARAMS["alpha"] * resonance_loss_val
         
         optimizer.zero_grad()
