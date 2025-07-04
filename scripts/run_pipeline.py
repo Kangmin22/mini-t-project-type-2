@@ -1,99 +1,97 @@
 import click
-import os
-import json
-from jinja2 import Environment, FileSystemLoader
-from src.hpo.optimize import run_hpo
+import subprocess
+import sys
 
-@click.group()
-def cli():
-    """End-to-End Local MLOps Pipeline for Project Mini-T."""
-    pass
-
-@cli.command()
-def setup():
-    """프로젝트 초기 설정을 수행합니다."""
-    click.echo("🚀 프로젝트 초기 설정을 시작합니다...")
-    os.makedirs("configs", exist_ok=True)
-    os.makedirs("reports", exist_ok=True)
-    os.makedirs("data", exist_ok=True)
-    click.echo("✅ 기본 폴더 구조를 확인 및 생성했습니다.")
-
-@cli.command()
-def hpo():
-    """(Phase 4) 하이퍼파라미터 최적화를 실행합니다."""
-    click.echo("🏃‍♂️ HPO를 시작합니다...")
+def run_command(command_args):
+    """주어진 명령어를 실행하고 성공 여부를 반환하는 헬퍼 함수."""
     try:
-        run_hpo()
-        click.secho("✅ HPO 성공적으로 완료!", fg="green")
+        module_path = command_args[1].replace('/', '.').replace('\\', '.')
+        if module_path.endswith('.py'):
+            module_path = module_path[:-3]
+        
+        command = [sys.executable, "-m", module_path]
+        
+        click.echo(f"--- Running command: {' '.join(command)} ---")
+        
+        # 실시간으로 출력을 스트리밍하기 위해 Popen 사용
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as p:
+            if p.stdout:
+                for line in p.stdout:
+                    click.echo(line, nl=False)
+        
+        if p.returncode != 0:
+            raise subprocess.CalledProcessError(p.returncode, p.args)
+
+        click.echo(f"--- Command successful ---")
+        return True
+    except subprocess.CalledProcessError:
+        click.secho("--- Command FAILED ---", fg='red', bold=True)
+        return False
     except Exception as e:
-        click.secho(f"🔥 HPO 실행 중 오류 발생: {e}", fg="red")
+        click.secho(f"An unexpected error occurred: {e}", fg='red', bold=True)
+        return False
 
-@cli.command(name="generate-report")
-def generate_report():
-    """(Phase 5) 실험 결과를 바탕으로 리포트를 생성합니다."""
-    click.echo("🏃‍♂️ 최종 리포트를 생성합니다...")
+# ### 수정된 부분: @click.pass_context 추가 ###
+@click.group(context_settings=dict(help_option_names=['-h', '--help']))
+@click.pass_context
+def cli(ctx):
+    """
+    Project Mini-T-TYPE-2: End-to-End MLOps Pipeline
+    """
+    # 컨텍스트 객체에
+    # 공통 변수 등을 저장할 수 있습니다.
+    ctx.obj = {}
 
-    reports_dir = "reports"
-    template_name = "report_template.md"
-    template_path = os.path.join(reports_dir, template_name)
+@cli.command()
+def check_sanity():
+    """Phase 3: GeometricPIDNet의 건전성을 검사합니다."""
+    if not run_command(["python", "scripts/check_geometric_pid.py"]):
+        sys.exit(1)
 
-    os.makedirs(reports_dir, exist_ok=True)
+@cli.command()
+def train_geometric_pid():
+    """Phase 3: 최종 GeometricPIDNet 모델을 훈련하고 저장합니다."""
+    if not run_command(["python", "scripts/run_phase3_training.py"]):
+        sys.exit(1)
 
-    # 템플릿 파일이 없으면 기본 템플릿 생성
-    if not os.path.exists(template_path):
-        default_template = """# {{ project_name }} 최종 실험 결과 보고서
+@cli.command()
+def run_hpo():
+    """Phase 2: Colab에서 HPO를 실행하라는 안내를 출력합니다."""
+    click.echo(click.style("INFO: HPO is designed to run on Google Colab with a GPU.", fg="yellow"))
+    click.echo("Please run the following command in your Colab notebook:")
+    click.echo(click.style("!python -m src.hpo.optimize", fg="green"))
 
-## 하이퍼파라미터 최적화 (HPO) 결과
+@cli.command()
+def train_final_model():
+    """Phase 2의 HPO 결과로 최종 PIDNet을 훈련하고 저장합니다."""
+    click.echo(click.style("INFO: This script uses the best hyperparameters found by HPO.", fg="cyan"))
+    if not run_command(["python", "scripts/train_final_model.py"]):
+        sys.exit(1)
 
-* **최종 손실 (Best Loss):** `{{ best_loss }}`
-
-### 최적 하이퍼파라미터 조합
-```json
-{{ hyperparameters_json_string }}
-```"""
-        with open(template_path, "w") as f:
-            f.write(default_template)
-        click.echo(f"기본 리포트 템플릿 '{template_name}'을 생성했습니다.")
-
-    env = Environment(loader=FileSystemLoader(reports_dir))
-    template = env.get_template(template_name)
-
-    results_path = "hpo_results.json"
-    if os.path.exists(results_path):
-        with open(results_path, "r") as f:
-            best_params = json.load(f)
-    else:
-        click.secho(
-            f"경고: '{results_path}' 파일을 찾을 수 없어 더미 데이터로 리포트를 생성합니다.",
-            fg="yellow",
-            err=True
-        )
-        best_params = {"loss": "N/A", "config": {"error": "hpo_results.json not found."}}
-
-    # 딕셔너리를 보기 좋은 JSON 문자열로 변환
-    hyperparameters_str = json.dumps(best_params.get("config", {}), indent=2)
-
-    rendered = template.render(
-        project_name="Project Mini-T",
-        best_loss=best_params.get("loss", "N/A"),
-        hyperparameters_json_string=hyperparameters_str
-    )
-
-    output_path = "final_report.md"
-    with open(output_path, "w") as f:
-        f.write(rendered)
-
-    click.echo(f"✅ 최종 리포트('{output_path}')가 생성되었습니다.")
-
+# ### 수정된 부분: ctx.invoke를 사용하여 다른 명령어를 호출 ###
 @cli.command()
 @click.pass_context
-def all(ctx):
-    """모든 파이프라인 단계를 순서대로 실행합니다."""
-    click.echo("🚀 전체 파이프라인을 시작합니다.")
-    ctx.invoke(setup)
-    ctx.invoke(hpo)
-    ctx.invoke(generate_report)
-    click.echo("🎉 모든 파이프라인 실행이 완료되었습니다!")
+def run_all(ctx):
+    """전체 파이프라인을 순차적으로 실행합니다 (HPO 제외)."""
+    click.echo(click.style("===== STARTING FULL PIPELINE =====", bold=True, fg='blue'))
+    
+    try:
+        click.echo("\n[Step 1/3] Running GeometricPIDNet Sanity Check...")
+        ctx.invoke(check_sanity)
+        
+        click.echo("\n[Step 2/3] Training the final standard PIDNet model...")
+        ctx.invoke(train_final_model)
+            
+        click.echo("\n[Step 3/3] Training the final GeometricPIDNet model...")
+        ctx.invoke(train_geometric_pid)
 
-if __name__ == "__main__":
+        click.echo(click.style("\n===== FULL PIPELINE COMPLETED SUCCESSFULLY! =====", bold=True, fg='green'))
+
+    except SystemExit as e:
+        if e.code != 0:
+             click.secho(f"\nPipeline stopped due to an error in the previous step.", fg='red', bold=True)
+
+# cli.add_command 방식은 더 이상 필요 없습니다. @cli.command 데코레이터가 자동으로 추가해줍니다.
+
+if __name__ == '__main__':
     cli()
