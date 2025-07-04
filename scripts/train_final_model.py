@@ -18,9 +18,9 @@ def main():
     print(f"Using device: {device}")
     
     BEST_HPARAMS = {
-        'lr': 0.07973517675218665, 
-        'alpha': 0.3462792257398627, 
-        'beta': 0.08583256327599675
+        'lr': 0.02659908571456277, 
+        'alpha': 0.40007390809065563, 
+        'beta': 0.026438785848541202
     }
     
     print("Training final model with best hyperparameters:")
@@ -65,8 +65,6 @@ def main():
         resonance_loss_val = geometric_loss_calculator.calculate_resonance_loss(
             flow_vectors.unsqueeze(0), target_vectors.unsqueeze(0))
         
-        # 최종 모델에서는 beta(경로 효율성)항도 최종 Loss에 반영해 줄 수 있습니다.
-        # 하지만 단순화를 위해 현재는 alpha만 사용합니다.
         final_loss = main_loss + BEST_HPARAMS["alpha"] * resonance_loss_val
         
         optimizer.zero_grad()
