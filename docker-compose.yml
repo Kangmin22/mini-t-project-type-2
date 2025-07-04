@@ -1,0 +1,21 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    container_name: mini-t-app-type-2
+    # 공유 메모리 크기를 4GB로 넉넉하게 늘려 경고 메시지 해결
+    shm_size: '4gb'
+    
+    # ### 수정된 부분: GPU 연결 방식을 더 안정적인 방식으로 변경 ###
+    # runtime: nvidia 를 추가하여 NVIDIA Docker 런타임을 사용하도록 명시
+    runtime: nvidia 
+    environment:
+      # 모든 GPU를 컨테이너에 노출
+      - NVIDIA_VISIBLE_DEVICES=all
+      - PYTHONPATH=/app
+      
+    volumes:
+      - .:/app
+    tty: true
+
+# ### deploy 키는 더 이상 필요 없으므로 삭제 ###

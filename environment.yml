@@ -1,0 +1,7 @@
+# FILE: environment.yml (Pip 중심 버전)
+name: mini-t
+channels:
+  - defaults
+dependencies:
+  - python=3.8
+  - pip
